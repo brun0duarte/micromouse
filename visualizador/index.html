@@ -1,0 +1,219 @@
+<!doctype html>
+<!--
+  Visualizador do MPU6050. Nao abra direto: rode servidor.py e abra http://localhost:8000
+  Recebe as linhas "w,x,y,z,ax,ay,az,gx,gy,gz" que o firmware manda pelo USB.
+-->
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MPU6050 3D</title>
+<style>
+  :root { --fundo: #111418; --painel: #1b2027; --texto: #e6e9ee; --fraco: #8a93a0;
+          --x: #e5534b; --y: #57ab5a; --z: #539bf5; --borda: #2d333b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fundo); color: var(--texto); font-family: system-ui, sans-serif;
+         display: grid; grid-template-columns: 1fr 360px; height: 100vh; }
+  #cena { position: relative; min-height: 300px; }
+  #cena canvas { display: block; }
+  #aviso { position: absolute; inset: 0; display: grid; place-items: center; color: var(--fraco);
+           pointer-events: none; font-size: 15px; text-align: center; padding: 16px; }
+  aside { background: var(--painel); border-left: 1px solid var(--borda); padding: 16px;
+          display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+  .botoes { display: flex; gap: 8px; }
+  button { flex: 1; padding: 10px; border: 0; border-radius: 8px; font-size: 14px; cursor: pointer;
+           background: #2d333b; color: var(--texto); }
+  button.principal { background: #347d39; }
+  button:disabled { opacity: .4; cursor: default; }
+  #status { font-size: 13px; color: var(--fraco); min-height: 1.2em; }
+  h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--fraco); }
+  .angulos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+  .angulos div { background: var(--fundo); border-radius: 8px; padding: 8px 4px; }
+  .angulos b { display: block; font: 600 22px ui-monospace, monospace; }
+  .angulos span { font-size: 12px; color: var(--fraco); }
+  .valores { font: 13px ui-monospace, monospace; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .valores span:nth-child(3n+1) { color: var(--x); }
+  .valores span:nth-child(3n+2) { color: var(--y); }
+  .valores span:nth-child(3n+3) { color: var(--z); }
+  .grafico { width: 100%; height: 110px; background: var(--fundo); border-radius: 8px; display: block; }
+  @media (max-width: 760px) { body { grid-template-columns: 1fr; grid-template-rows: 50vh auto; height: auto; }
+                              aside { border-left: 0; border-top: 1px solid var(--borda); } }
+</style>
+</head>
+<body>
+<div id="cena"><div id="aviso"><span>Esperando dados do servidor.py…</span></div></div>
+<aside>
+  <div class="botoes">
+    <button id="zerar" class="principal">Zerar orientação</button>
+  </div>
+  <div id="status">conectando…</div>
+
+  <div>
+    <h3>Orientação (graus)</h3>
+    <div class="angulos">
+      <div><b id="yaw">–</b><span>yaw (Z)</span></div>
+      <div><b id="pitch">–</b><span>pitch (Y)</span></div>
+      <div><b id="roll">–</b><span>roll (X)</span></div>
+    </div>
+  </div>
+
+  <div>
+    <h3>Acelerômetro (g)</h3>
+    <div class="valores"><span id="ax">x –</span><span id="ay">y –</span><span id="az">z –</span></div>
+    <canvas class="grafico" id="gAcel"></canvas>
+  </div>
+
+  <div>
+    <h3>Giroscópio (graus/s)</h3>
+    <div class="valores"><span id="gx">x –</span><span id="gy">y –</span><span id="gz">z –</span></div>
+    <canvas class="grafico" id="gGiro"></canvas>
+  </div>
+</aside>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const CORES = ['#e5534b', '#57ab5a', '#539bf5'];
+const AMOSTRAS = 300;  // ~3 s a 100 Hz
+
+// ---------- cena 3D ----------
+const cena = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 1, 1000);
+camera.position.set(0, 90, 160);
+camera.lookAt(0, 0, 0);
+const render = new THREE.WebGLRenderer({ antialias: true });
+render.setPixelRatio(devicePixelRatio);
+render.setClearColor(0x111418);
+$('cena').prepend(render.domElement);
+
+cena.add(new THREE.AmbientLight(0xffffff, 0.5));
+const luz = new THREE.DirectionalLight(0xffffff, 0.8);
+luz.position.set(50, 100, 80);
+cena.add(luz);
+const grade = new THREE.GridHelper(300, 20, 0x2d333b, 0x22272e);
+grade.position.y = -30;
+cena.add(grade);
+
+// chassi: frente do robo = +Y do sensor = -Z da cena
+const robo = new THREE.Group();
+const placa = new THREE.Mesh(new THREE.BoxGeometry(60, 6, 80), new THREE.MeshStandardMaterial({ color: 0x1f6f3f }));
+robo.add(placa);
+const matRoda = new THREE.MeshStandardMaterial({ color: 0x333333 });
+for (const lado of [-1, 1]) {
+  const roda = new THREE.Mesh(new THREE.CylinderGeometry(16, 16, 8, 32), matRoda);
+  roda.rotation.z = Math.PI / 2;
+  roda.position.set(lado * 36, -4, 8);
+  robo.add(roda);
+}
+const frente = new THREE.Mesh(new THREE.ConeGeometry(8, 16, 3), new THREE.MeshStandardMaterial({ color: 0xe5c07b }));
+frente.rotation.x = -Math.PI / 2;
+frente.position.set(0, 6, -30);
+robo.add(frente);
+robo.add(new THREE.AxesHelper(55));  // vermelho X, verde Y, azul Z (eixos da cena)
+cena.add(robo);
+
+function ajustarTamanho() {
+  const el = $('cena');
+  render.setSize(el.clientWidth, el.clientHeight);
+  camera.aspect = el.clientWidth / el.clientHeight;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', ajustarTamanho);
+ajustarTamanho();
+
+// ---------- dados ----------
+let qAtual = null;                      // quaternion do sensor {w,x,y,z}
+let qRef = { w: 1, x: 0, y: 0, z: 0 };  // "zero" escolhido pelo usuario
+const historico = { acel: [[], [], []], giro: [[], [], []] };
+let ultimo = null, linhas = 0, hz = 0;
+
+const conj = q => ({ w: q.w, x: -q.x, y: -q.y, z: -q.z });
+const mult = (a, b) => ({
+  w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+  x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+  y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+  z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+});
+const graus = r => r * 180 / Math.PI;
+
+function processarLinha(linha) {
+  const v = linha.split(',').map(Number);
+  if (v.length !== 10 || v.some(isNaN)) {
+    if (linha.trim()) $('status').textContent = 'placa: ' + linha.trim();
+    return;
+  }
+  linhas++;
+  qAtual = { w: v[0], x: v[1], y: v[2], z: v[3] };
+  ultimo = v;
+  for (let i = 0; i < 3; i++) {
+    historico.acel[i].push(v[4 + i]);
+    historico.giro[i].push(v[7 + i]);
+    if (historico.acel[i].length > AMOSTRAS) { historico.acel[i].shift(); historico.giro[i].shift(); }
+  }
+}
+
+setInterval(() => {
+  hz = linhas; linhas = 0;
+  if (hz) { $('status').textContent = `recebendo · ${hz} amostras/s`; $('aviso').style.display = 'none'; }
+}, 1000);
+
+// servidor.py repassa cada linha do serial; o EventSource reconecta sozinho se cair
+const fonte = new EventSource('/dados');
+fonte.onmessage = e => processarLinha(e.data);
+fonte.onerror = () => { $('status').textContent = 'sem conexão com o servidor.py'; };
+
+$('zerar').onclick = () => { if (qAtual) qRef = { ...qAtual }; };
+
+// ---------- graficos ----------
+function desenharGrafico(canvas, series, escalaMin) {
+  const w = canvas.width = canvas.clientWidth * devicePixelRatio;
+  const h = canvas.height = canvas.clientHeight * devicePixelRatio;
+  const ctx = canvas.getContext('2d');
+  let max = escalaMin;
+  for (const s of series) for (const v of s) max = Math.max(max, Math.abs(v));
+  const y = v => h / 2 - (v / max) * (h / 2 - 4);
+
+  ctx.strokeStyle = '#2d333b';
+  ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+  ctx.fillStyle = '#8a93a0';
+  ctx.font = `${11 * devicePixelRatio}px monospace`;
+  ctx.fillText('±' + max.toFixed(max < 10 ? 1 : 0), 4, 12 * devicePixelRatio);
+
+  ctx.lineWidth = 1.5 * devicePixelRatio;
+  series.forEach((s, i) => {
+    ctx.strokeStyle = CORES[i];
+    ctx.beginPath();
+    s.forEach((v, j) => {
+      const x = (j / (AMOSTRAS - 1)) * w;
+      j ? ctx.lineTo(x, y(v)) : ctx.moveTo(x, y(v));
+    });
+    ctx.stroke();
+  });
+}
+
+// ---------- quadro ----------
+function quadro() {
+  requestAnimationFrame(quadro);
+  if (qAtual) {
+    const q = mult(conj(qRef), qAtual);
+    // sensor (Z para cima) -> cena do three.js (Y para cima): x->x, y->-z, z->y
+    robo.quaternion.set(q.x, q.z, -q.y, q.w);
+
+    const roll = Math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y));
+    const pitch = Math.asin(Math.max(-1, Math.min(1, 2 * (q.w * q.y - q.z * q.x))));
+    const yaw = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+    $('yaw').textContent = graus(yaw).toFixed(1);
+    $('pitch').textContent = graus(pitch).toFixed(1);
+    $('roll').textContent = graus(roll).toFixed(1);
+
+    ['ax', 'ay', 'az'].forEach((id, i) => $(id).textContent = `${'xyz'[i]} ${ultimo[4 + i].toFixed(2)}`);
+    ['gx', 'gy', 'gz'].forEach((id, i) => $(id).textContent = `${'xyz'[i]} ${ultimo[7 + i].toFixed(1)}`);
+    desenharGrafico($('gAcel'), historico.acel, 1.2);
+    desenharGrafico($('gGiro'), historico.giro, 20);
+  }
+  render.render(cena, camera);
+}
+quadro();
+</script>
+</body>
+</html>
