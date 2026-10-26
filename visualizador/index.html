@@ -35,6 +35,12 @@
   .valores span:nth-child(3n+1) { color: var(--x); }
   .valores span:nth-child(3n+2) { color: var(--y); }
   .valores span:nth-child(3n+3) { color: var(--z); }
+  .pad { display: grid; grid-template-columns: repeat(3, 56px); gap: 6px; justify-content: center; margin-bottom: 8px; }
+  .pad button { height: 48px; font-size: 18px; touch-action: none; user-select: none; }
+  .pad button.ativo { background: #347d39; }
+  .pad .parar { background: #8e2b2b; }
+  .vel { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fraco); margin-bottom: 6px; }
+  .vel input { flex: 1; }
   .grafico { width: 100%; height: 110px; background: var(--fundo); border-radius: 8px; display: block; }
   @media (max-width: 760px) { body { grid-template-columns: 1fr; grid-template-rows: 50vh auto; height: auto; }
                               aside { border-left: 0; border-top: 1px solid var(--borda); } }
@@ -55,6 +61,23 @@
       <div><b id="pitch">–</b><span>pitch (Y)</span></div>
       <div><b id="roll">–</b><span>roll (X)</span></div>
     </div>
+  </div>
+
+  <div>
+    <h3>Distância (VL53L0X)</h3>
+    <div class="angulos" id="distancias"></div>
+  </div>
+
+  <div>
+    <h3>Motores (segure o botão ou use as setas do teclado)</h3>
+    <div class="pad">
+      <span></span><button data-m="1,1">▲</button><span></span>
+      <button data-m="-1,1">◀</button><button data-m="0,0" class="parar">■</button><button data-m="1,-1">▶</button>
+      <span></span><button data-m="-1,-1">▼</button><span></span>
+    </div>
+    <label class="vel">Potência <input type="range" id="vel" min="40" max="255" value="150"> <span id="velTxt">150</span></label>
+    <div class="valores"><span id="mEsq">esq –</span><span></span><span id="mDir">dir –</span></div>
+    <div class="valores"><span id="encEsq">enc –</span><span id="velEsq">– pulsos/s</span><span></span></div>
   </div>
 
   <div>
@@ -138,7 +161,7 @@ const graus = r => r * 180 / Math.PI;
 
 function processarLinha(linha) {
   const v = linha.split(',').map(Number);
-  if (v.length !== 10 || v.some(isNaN)) {
+  if (v.length < 10 || v.some(isNaN)) {
     if (linha.trim()) $('status').textContent = 'placa: ' + linha.trim();
     return;
   }
@@ -161,6 +184,27 @@ setInterval(() => {
 const fonte = new EventSource('/dados');
 fonte.onmessage = e => processarLinha(e.data);
 fonte.onerror = () => { $('status').textContent = 'sem conexão com o servidor.py'; };
+
+// ---------- motores ----------
+// enquanto um comando esta ativo, ele e repetido a cada 150 ms; o firmware para sozinho apos 500 ms sem comando
+let direcao = [0, 0];
+function enviarMotores() {
+  const p = +$('vel').value;
+  fetch(`/mover?e=${direcao[0] * p}&d=${direcao[1] * p}`).catch(() => {});
+}
+function comandar(d) { direcao = d; enviarMotores(); }
+setInterval(() => { if (direcao[0] || direcao[1]) enviarMotores(); }, 150);
+$('vel').oninput = () => $('velTxt').textContent = $('vel').value;
+
+document.querySelectorAll('[data-m]').forEach(b => {
+  const solta = () => { b.classList.remove('ativo'); comandar([0, 0]); };
+  b.onpointerdown = () => { b.classList.add('ativo'); comandar(b.dataset.m.split(',').map(Number)); };
+  b.onpointerup = b.onpointerleave = b.onpointercancel = solta;
+});
+const TECLAS = { ArrowUp: [1, 1], ArrowDown: [-1, -1], ArrowLeft: [-1, 1], ArrowRight: [1, -1] };
+addEventListener('keydown', e => { if (TECLAS[e.key] && !e.repeat) { e.preventDefault(); comandar(TECLAS[e.key]); } });
+addEventListener('keyup', e => { if (TECLAS[e.key]) comandar([0, 0]); });
+addEventListener('blur', () => comandar([0, 0]));
 
 $('zerar').onclick = () => { if (qAtual) qRef = { ...qAtual }; };
 
@@ -208,6 +252,16 @@ function quadro() {
 
     ['ax', 'ay', 'az'].forEach((id, i) => $(id).textContent = `${'xyz'[i]} ${ultimo[4 + i].toFixed(2)}`);
     ['gx', 'gy', 'gz'].forEach((id, i) => $(id).textContent = `${'xyz'[i]} ${ultimo[7 + i].toFixed(1)}`);
+    // colunas depois da 10a: uma distancia por sensor, em mm
+    const dist = ultimo.slice(10, 13);
+    if (ultimo.length >= 15) { $('mEsq').textContent = `esq ${ultimo[13]}`; $('mDir').textContent = `dir ${ultimo[14]}`; }
+    if (ultimo.length >= 17) { $('encEsq').textContent = `enc ${ultimo[15]}`; $('velEsq').textContent = `${ultimo[16]} pulsos/s`; }
+    const nomes = ['frente', 'esquerda', 'direita'];
+    const texto = mm => mm === -2 ? 'sem sensor' : mm === -1 ? 'livre' : mm + ' mm';
+    $('distancias').innerHTML = dist.length
+      ? dist.map((mm, i) => `<div><b>${mm >= 0 ? mm : '–'}</b><span>${nomes[i] ?? 'sensor ' + (i + 1)}: ${texto(mm)}</span></div>`).join('')
+      : '<div><span>o firmware não manda distância</span></div>';
+
     desenharGrafico($('gAcel'), historico.acel, 1.2);
     desenharGrafico($('gGiro'), historico.giro, 20);
   }

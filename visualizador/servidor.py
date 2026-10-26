@@ -10,18 +10,22 @@ import queue
 import sys
 import threading
 import time
+import urllib.parse
 
 import serial
 
 PORTA = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyACM0"
 PAGINA = pathlib.Path(__file__).with_name("index.html")
 clientes = []  # uma fila por aba aberta
+conexao = None  # serial aberta, usada tambem para mandar comandos dos motores
 
 
 def ler_serial():
+    global conexao
     while True:
         try:
             with serial.Serial(PORTA, 115200, timeout=1) as s:
+                conexao = s
                 print("serial conectada:", PORTA)
                 while True:
                     linha = s.readline().decode(errors="replace").strip()
@@ -32,13 +36,24 @@ def ler_serial():
                             except queue.Full:  # aba travada: descarta
                                 pass
         except serial.SerialException as e:
+            conexao = None
             print("serial:", e, "- tentando de novo em 1 s")
             time.sleep(1)
 
 
 class Servidor(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/dados":
+        if self.path.startswith("/mover"):
+            # /mover?e=150&d=-150  ->  "M,150,-150" para o firmware
+            args = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                esq, dir_ = int(args["e"][0]), int(args["d"][0])
+                conexao.write(f"M,{esq},{dir_}\n".encode())
+                self.send_response(204)
+            except (KeyError, ValueError, AttributeError, serial.SerialException):
+                self.send_response(400)
+            self.end_headers()
+        elif self.path == "/dados":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
