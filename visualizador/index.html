@@ -252,8 +252,9 @@ function quadro() {
 
     ['ax', 'ay', 'az'].forEach((id, i) => $(id).textContent = `${'xyz'[i]} ${ultimo[4 + i].toFixed(2)}`);
     ['gx', 'gy', 'gz'].forEach((id, i) => $(id).textContent = `${'xyz'[i]} ${ultimo[7 + i].toFixed(1)}`);
-    // colunas depois da 10a: uma distancia por sensor, em mm
-    const dist = ultimo.slice(10, 13);
+    // colunas depois da 10a: uma distancia por sensor, em mm; desconta 68 mm (negativos sao codigos: -1 livre, -2 sem sensor)
+    const DESCONTO_MM = 68;
+    const dist = ultimo.slice(10, 13).map(mm => mm >= 0 ? Math.max(0, mm - DESCONTO_MM) : mm);
     if (ultimo.length >= 15) { $('mEsq').textContent = `esq ${ultimo[13]}`; $('mDir').textContent = `dir ${ultimo[14]}`; }
     if (ultimo.length >= 17) { $('encEsq').textContent = `enc ${ultimo[15]}`; $('velEsq').textContent = `${ultimo[16]} pulsos/s`; }
     const nomes = ['frente', 'esquerda', 'direita'];
